@@ -1,0 +1,6 @@
+github.com/garyburd/websocket v0.0.0-20260701223955-0f9770048012 h1:RYIxQI69wJvhg66bulMSL3Qta1fiocKw+kpjd0D/iHE=
+github.com/garyburd/websocket v0.0.0-20260701223955-0f9770048012/go.mod h1:mVT2ms8iCQuWGI7QwckHRSaOPcdGeS5lxvIGdCYvjDE=
+golang.org/x/image v0.42.0 h1:1gSs6ehNWXLbkHBIPcWztk3D/6aIA/8hauiAYtlodVY=
+golang.org/x/image v0.42.0/go.mod h1:rrpelvGFt+kLPAjPM4HeWPgrl0FtafueU//e5N0qk/Q=
+golang.org/x/text v0.38.0 h1:sXmwo9DwP3OK9EZ7PqAdaooSGozfl/3a6/xJcbzPRhE=
+golang.org/x/text v0.38.0/go.mod h1:YXZt3QhHUKYT53r2lLKFIVi6Ao1jdzrTR/KQ09qyxF4=

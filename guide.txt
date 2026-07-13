@@ -1,0 +1,83 @@
+OVERVIEW
+
+sync mirrors local files to My Photos. Other commands map closely to TV
+requests and work by content id. sync
+records its uploads in <tv.json> to avoid re-uploading them; plumbing commands
+do not read or change those records.
+
+SYNC
+
+sync normally makes My Photos match its inputs exactly. It keeps one extra
+photo when deleting the current selection could disrupt Art Mode or a
+configured slideshow; a later run removes it after the selection changes.
+Use -exact to delete it immediately.
+
+Inputs may be image files or directories (non-recursive). For sync,
+send-image, and delete-image-list, "-" expands to non-empty lines from stdin:
+
+	find ~/Pictures/frame | framectl ~/tv.json sync -
+
+FIRMWARE BEHAVIOR AFFECTING SYNC
+
+The TV firmware has several behaviors that shape sync's safeguards:
+
+- Deleting the selected image ends slideshow mode, as does temporarily emptying
+  My Photos.
+- Content-list replies may repeat a content id under multiple categories.
+
+For these reasons sync uploads before deleting, deduplicates content ids, and
+never leaves My Photos temporarily empty. Without -exact, it keeps the selected
+photo rather than disrupting Art Mode or a slideshow.
+
+IMAGES
+
+Uploads are fitted without cropping to a 3840x2160 canvas. Non-16:9 images get
+letter- or pillar-box fills derived from their edges. Use a 16:9 image to
+control the whole frame.
+
+DISCOVERY AND PAIRING
+
+discover prints `ip<TAB>name<TAB>mac` for each device. pair requires either
+-host or -name; names are discovered with SSDP and matched case-insensitively.
+
+On first use, accept the TV's pairing prompt. <tv.json> stores the token,
+target, and MAC. Stored names are resolved on each connection, so address
+changes are safe; stored hosts are used verbatim. Later commands reuse the
+token without another prompt.
+
+	framectl ~/tv.json pair -name "The Frame 50"
+
+WAKING
+
+Commands retry sleeping TVs with Wake-on-LAN when pairing recorded a MAC and
+the TV has Wake-on-LAN / "Power On with Mobile" enabled. sync wakes the TV only
+for locally detected work or -force; no-change and -dry-run syncs try once.
+Thus TV-side changes are reconciled only when a run finds the TV on. -no-wake
+makes every command try once and fail fast.
+
+PLUMBING
+
+get-current-artwork prints the selected content id, so it can pipe into
+select-image or delete-image-list. select-image displays it; -show=false only
+sets the selection. set-artmode-status changes Art Mode.
+
+set-slideshow-status accepts off, 3, 15, 60, 720, or 1440 minutes.
+get-content-list prints tab-separated rows; -category filters client-side.
+
+send-image uploads are unmanaged and a later sync deletes them. Deleting a
+managed photo directly leaves a record that sync repairs by re-uploading it.
+
+GLOBAL FLAGS
+
+-timeout, -debug, and -no-wake precede <tv.json>:
+
+	framectl -debug -timeout 30s ~/tv.json sync ~/Pictures/frame
+
+-debug dumps wire messages. Command flags must follow the command but precede
+its positional arguments. discover takes no data file or globals; its own
+-timeout controls scan duration. The command-first names discover, help, and
+prepare are reserved and cannot be used as the data-file argument.
+
+-timeout bounds connection setup, including wake retries, but not the
+operation. Ctrl-C cancels any command. Without -timeout, discover runs until
+Ctrl-C.

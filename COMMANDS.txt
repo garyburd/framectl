@@ -1,0 +1,151 @@
+framectl — manage art on a Samsung "The Frame" TV over its undocumented
+art-app WebSocket channel.
+
+usage:
+  framectl [-timeout d] [-debug] [-no-wake] <tv.json> <command> [command flags] [args]
+  framectl discover [-timeout d]
+  framectl help
+
+Commands (the data file <tv.json> comes first, before the command):
+  <tv.json> pair [-host hostname] [-name name]
+      authorize and record the connection (give exactly one of -host / -name)
+      -host hostname
+          Frame TV hostname or IP
+      -name name
+          SSDP friendly name of the TV (case-insensitive substring; runs discovery)
+  <tv.json> sync [-dry-run] [-exact] [-force] <path>...
+      mirror My Photos to these images (or a dir, or - for stdin); never touches the slideshow
+      -dry-run
+          print the upload/delete plan without changing the TV or the data file (never wakes the TV)
+      -exact
+          delete even the currently selected photo (knocks the TV out of slideshow mode)
+      -force
+          re-upload every image, even ones unchanged since the last run
+  <tv.json> get-artmode-status
+      print the TV's Art Mode state (on or off)
+  <tv.json> set-artmode-status <on|off>
+      switch Art Mode on or off
+  <tv.json> get-content-list [-category category]
+      dump the TV's content list as TSV, all categories
+      -category category
+          show only this category id (e.g. MY-C0002; filtered client-side, the wire request takes none)
+  <tv.json> get-current-artwork
+      print the content id of the artwork the TV currently has selected
+  <tv.json> select-image [-category category] [-show] <content-id>
+      select a photo by content id and display it (-show=false only sets the selection)
+      -category category
+          category id of the image (optional; the TV infers it when omitted)
+      -show
+          display the photo now; -show=false sets the selection only (default true)
+  <tv.json> get-slideshow-status
+      print the slideshow state: off, or the interval in minutes
+  <tv.json> set-slideshow-status [-category category] [-shuffle] <off|minutes>
+      start or stop the firmware slideshow (minutes: 3, 15, 60, 720, 1440)
+      -category category
+          category to run the slideshow over (MY-C0002 = My Photos, MY-C0008 = store) (default MY-C0002)
+      -shuffle
+          show images in random order
+  <tv.json> send-image <image>...
+      upload each image to My Photos, printing its content id (- reads paths from stdin)
+  <tv.json> delete-image-list <content-id>...
+      delete photos from the TV by content id (- reads ids from stdin)
+  <tv.json> change-favorite <content-id> <on|off>
+      mark a store artwork as a favorite (on), or unmark it (off); the TV rejects uploaded photos
+  discover [-timeout duration]
+      stream TVs found on the LAN (SSDP/UPnP) until interrupted
+      -timeout duration
+          how long to scan for SSDP replies; 0 = until interrupted (default 0s)
+  help
+      print this manual
+
+Global flags (before <tv.json>):
+  -debug
+      dump every raw message exchanged with the TV to stderr
+  -no-wake
+      don't send Wake-on-LAN if the TV doesn't answer
+  -timeout duration
+      total time to get a connection to the TV (includes sending Wake-on-LAN and retrying if it's asleep) (default 1m0s)
+
+OVERVIEW
+
+sync mirrors local files to My Photos. Other commands map closely to TV
+requests and work by content id. sync
+records its uploads in <tv.json> to avoid re-uploading them; plumbing commands
+do not read or change those records.
+
+SYNC
+
+sync normally makes My Photos match its inputs exactly. It keeps one extra
+photo when deleting the current selection could disrupt Art Mode or a
+configured slideshow; a later run removes it after the selection changes.
+Use -exact to delete it immediately.
+
+Inputs may be image files or directories (non-recursive). For sync,
+send-image, and delete-image-list, "-" expands to non-empty lines from stdin:
+
+	find ~/Pictures/frame | framectl ~/tv.json sync -
+
+FIRMWARE BEHAVIOR AFFECTING SYNC
+
+The TV firmware has several behaviors that shape sync's safeguards:
+
+- Deleting the selected image ends slideshow mode, as does temporarily emptying
+  My Photos.
+- Content-list replies may repeat a content id under multiple categories.
+
+For these reasons sync uploads before deleting, deduplicates content ids, and
+never leaves My Photos temporarily empty. Without -exact, it keeps the selected
+photo rather than disrupting Art Mode or a slideshow.
+
+IMAGES
+
+Uploads are fitted without cropping to a 3840x2160 canvas. Non-16:9 images get
+letter- or pillar-box fills derived from their edges. Use a 16:9 image to
+control the whole frame.
+
+DISCOVERY AND PAIRING
+
+discover prints `ip<TAB>name<TAB>mac` for each device. pair requires either
+-host or -name; names are discovered with SSDP and matched case-insensitively.
+
+On first use, accept the TV's pairing prompt. <tv.json> stores the token,
+target, and MAC. Stored names are resolved on each connection, so address
+changes are safe; stored hosts are used verbatim. Later commands reuse the
+token without another prompt.
+
+	framectl ~/tv.json pair -name "The Frame 50"
+
+WAKING
+
+Commands retry sleeping TVs with Wake-on-LAN when pairing recorded a MAC and
+the TV has Wake-on-LAN / "Power On with Mobile" enabled. sync wakes the TV only
+for locally detected work or -force; no-change and -dry-run syncs try once.
+Thus TV-side changes are reconciled only when a run finds the TV on. -no-wake
+makes every command try once and fail fast.
+
+PLUMBING
+
+get-current-artwork prints the selected content id, so it can pipe into
+select-image or delete-image-list. select-image displays it; -show=false only
+sets the selection. set-artmode-status changes Art Mode.
+
+set-slideshow-status accepts off, 3, 15, 60, 720, or 1440 minutes.
+get-content-list prints tab-separated rows; -category filters client-side.
+
+send-image uploads are unmanaged and a later sync deletes them. Deleting a
+managed photo directly leaves a record that sync repairs by re-uploading it.
+
+GLOBAL FLAGS
+
+-timeout, -debug, and -no-wake precede <tv.json>:
+
+	framectl -debug -timeout 30s ~/tv.json sync ~/Pictures/frame
+
+-debug dumps wire messages. Command flags must follow the command but precede
+its positional arguments. discover takes no data file or globals; its own
+-timeout controls scan duration. The command-first names discover, help, and
+prepare are reserved and cannot be used as the data-file argument.
+
+-timeout bounds connection setup, including wake retries, but not the
+operation. Ctrl-C cancels any command. Without -timeout, discover runs until
+Ctrl-C.
