@@ -1,4 +1,4 @@
-github.com/garyburd/websocket v0.0.0-20260821050455-bd7d3b439929 h1:zMCYHxPGtCHERxtGG8Cn+GkH/ZOI0JeLWLqzJz364rg=
-github.com/garyburd/websocket v0.0.0-20260821050455-bd7d3b439929/go.mod h1:3Vxj5t9hRWCcoB5nSG5EMtlgavqIcizdgoSremQXWUg=
+github.com/garyburd/websocket v0.0.0-20261109212222-8ab2c342e1c9 h1:JCy2pU/QROYFle7wu/tuyQO5CzE7vFJZ49tapdxG4vE=
+github.com/garyburd/websocket v0.0.0-20261109212222-8ab2c342e1c9/go.mod h1:3Vxj5t9hRWCcoB5nSG5EMtlgavqIcizdgoSremQXWUg=
 golang.org/x/image v0.42.0 h1:1gSs6ehNWXLbkHBIPcWztk3D/6aIA/8hauiAYtlodVY=
 golang.org/x/image v0.42.0/go.mod h1:rrpelvGFt+kLPAjPM4HeWPgrl0FtafueU//e5N0qk/Q=
