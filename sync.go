@@ -110,6 +110,12 @@ func (c *syncCmd) mirror(ctx context.Context, g *globals, cl *artClient, d *tvDa
 		return err
 	}
 
+	if kept && forgetKept(d, currentID) {
+		if err := saveTVData(g.tvFile, *d); err != nil {
+			return err
+		}
+	}
+
 	if kept {
 		log.Printf("sync: %d uploaded, %d deleted; kept current image %s (it'll be removed once the selection moves off it)", len(uploads), len(deletes), currentID)
 	} else {
@@ -169,13 +175,18 @@ func scanDir(dir string) ([]sourceImage, error) {
 		if e.IsDir() || !isImage(e.Name()) {
 			continue
 		}
-		info, err := e.Info()
-		if err != nil {
-			return nil, err
-		}
 		abs, err := filepath.Abs(filepath.Join(dir, e.Name()))
 		if err != nil {
 			return nil, err
+		}
+		// Stat follows symlinks, matching explicitly named files; the entry's
+		// own Info would report the link's size and mtime.
+		info, err := os.Stat(abs)
+		if err != nil {
+			return nil, err
+		}
+		if info.IsDir() {
+			continue // a link to a directory; scanning is non-recursive
 		}
 		out = append(out, sourceImage{path: abs, size: info.Size(), modTime: info.ModTime()})
 	}
@@ -288,6 +299,17 @@ func applyDeletes(cl *artClient, d *tvData, tvFile string, deletes []deletion) e
 		fmt.Printf("deleted %s (%s)\n", del.label, del.id)
 	}
 	return nil
+}
+
+// forgetKept drops the kept current photo's record and reports whether one
+// existed. Uploads already replaced the record of a changed or forced source,
+// so a surviving record means the source left the set. Keeping it would make
+// sourcesDiffer wake the TV on every run until the selection moves; without
+// it the photo is unmanaged and a later run that finds the TV on deletes it.
+func forgetKept(d *tvData, id string) bool {
+	n := len(d.Managed)
+	d.Managed = withoutIDs(d.Managed, map[string]bool{id: true})
+	return len(d.Managed) != n
 }
 
 // dropDeletion removes id without mutating the caller's slice.

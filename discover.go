@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"iter"
 	"log"
@@ -71,19 +72,23 @@ const mSearch = "M-SEARCH * HTTP/1.1\r\n" +
 const ssdpWindow = 3 * time.Second
 
 // ssdpScan repeatedly probes and yields each distinct Samsung TV once. It stops
-// when ctx is canceled or the consumer breaks.
-func ssdpScan(ctx context.Context) iter.Seq[tvInfo] {
-	return func(yield func(tvInfo) bool) {
+// when ctx is canceled or the consumer breaks. A socket failure ends the scan
+// with one final error.
+func ssdpScan(ctx context.Context) iter.Seq2[tvInfo, error] {
+	return func(yield func(tvInfo, error) bool) {
 		group, err := net.ResolveUDPAddr("udp4", ssdpAddr)
 		if err != nil {
+			yield(tvInfo{}, fmt.Errorf("ssdp: %w", err))
 			return
 		}
 		conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 		if err != nil {
+			yield(tvInfo{}, fmt.Errorf("ssdp: %w", err))
 			return
 		}
 		defer conn.Close()
-		go func() { <-ctx.Done(); conn.Close() }() // unblock ReadFromUDP on cancel
+		// Unblock ReadFromUDP on cancel.
+		defer context.AfterFunc(ctx, func() { conn.Close() })()
 
 		hc := &http.Client{Timeout: 3 * time.Second}
 		described := map[string]tvInfo{} // LOCATION -> info (cache the HTTP describe)
@@ -98,6 +103,11 @@ func ssdpScan(ctx context.Context) iter.Seq[tvInfo] {
 			for {
 				n, src, err := conn.ReadFromUDP(buf)
 				if err != nil {
+					var ne net.Error
+					if ctx.Err() == nil && !(errors.As(err, &ne) && ne.Timeout()) {
+						yield(tvInfo{}, fmt.Errorf("ssdp: %w", err))
+						return
+					}
 					break // window elapsed, or socket closed by cancel
 				}
 				loc := ssdpHeader(buf[:n], "LOCATION")
@@ -106,7 +116,7 @@ func ssdpScan(ctx context.Context) iter.Seq[tvInfo] {
 				}
 				info, ok := described[loc]
 				if !ok {
-					info = describeTV(hc, loc, src.IP.String())
+					info = describeTV(ctx, hc, loc, src.IP.String())
 					described[loc] = info
 					// The HTTP describe consumed read time; restart the window
 					// so other replies aren't squeezed out.
@@ -116,7 +126,7 @@ func ssdpScan(ctx context.Context) iter.Seq[tvInfo] {
 					continue // not a Samsung TV, or already delivered
 				}
 				yielded[info.ID] = true
-				if !yield(info) {
+				if !yield(info, nil) {
 					return
 				}
 			}
@@ -125,19 +135,22 @@ func ssdpScan(ctx context.Context) iter.Seq[tvInfo] {
 }
 
 // describeTV returns Samsung device details and an ARP-derived MAC.
-func describeTV(hc *http.Client, location, ip string) tvInfo {
-	name, mfr := describe(hc, location)
+func describeTV(ctx context.Context, hc *http.Client, location, ip string) tvInfo {
+	name, mfr := describe(ctx, hc, location)
 	if !strings.Contains(strings.ToLower(mfr), "samsung") {
 		return tvInfo{}
 	}
-	mac := macForIP(ip)
+	mac := macForIP(ctx, ip)
 	return tvInfo{ID: tvID(mac, ip), Name: name, IP: ip, MAC: mac}
 }
 
 // discover prints devices until its timeout or Ctrl-C.
 func discover(ctx context.Context) error {
 	found := false
-	for tv := range ssdpScan(ctx) {
+	for tv, err := range ssdpScan(ctx) {
+		if err != nil {
+			return err
+		}
 		fmt.Printf("%s\t%s\t%s\n", tv.IP, tv.Name, tv.MAC)
 		found = true
 	}
@@ -151,8 +164,8 @@ var macRE = regexp.MustCompile(`[0-9a-fA-F]{1,2}(?::[0-9a-fA-F]{1,2}){5}`)
 
 // macForIP reads and normalizes a same-subnet MAC from the system ARP cache.
 // It returns "" when no entry exists; Go exposes no ARP-table API.
-func macForIP(ip string) string {
-	out, err := exec.Command("arp", "-n", ip).Output()
+func macForIP(ctx context.Context, ip string) string {
+	out, err := exec.CommandContext(ctx, "arp", "-n", ip).Output()
 	if err != nil {
 		return "" // no entry: arp exits non-zero
 	}
@@ -174,19 +187,49 @@ func normalizeMAC(s string) string {
 	return strings.Join(parts, ":")
 }
 
-// resolveName returns the first case-insensitive friendly-name match. ctx bounds
-// the scan; a deadline becomes "not found," while cancellation is preserved.
-func resolveName(ctx context.Context, name string) (string, error) {
+// ambiguityGrace is how long a substring match waits for rival matches. It
+// covers the MX reply delay requested in mSearch.
+const ambiguityGrace = 2 * time.Second
+
+// resolveName finds a TV by case-insensitive friendly name. An exact match
+// returns at once. A substring match waits ambiguityGrace and fails if a
+// second TV also matches. ctx bounds the scan; a deadline becomes "not
+// found," while cancellation is preserved.
+func resolveName(ctx context.Context, name string) (tvInfo, error) {
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	low := strings.ToLower(name)
-	for tv := range ssdpScan(ctx) {
-		if strings.Contains(strings.ToLower(tv.Name), low) {
-			return tv.IP, nil
+	var matches []tvInfo
+	for tv, err := range ssdpScan(sctx) {
+		if err != nil {
+			return tvInfo{}, err
 		}
+		n := strings.ToLower(tv.Name)
+		if n == low {
+			return tv, nil
+		}
+		if !strings.Contains(n, low) {
+			continue
+		}
+		if len(matches) == 0 {
+			defer time.AfterFunc(ambiguityGrace, cancel).Stop()
+		}
+		matches = append(matches, tv)
 	}
 	if ctx.Err() == context.Canceled {
-		return "", ctx.Err()
+		return tvInfo{}, ctx.Err()
 	}
-	return "", fmt.Errorf("no Samsung device matching %q (try: framectl discover)", name)
+	switch len(matches) {
+	case 0:
+		return tvInfo{}, fmt.Errorf("no Samsung device matching %q (try: framectl discover)", name)
+	case 1:
+		return matches[0], nil
+	}
+	names := make([]string, len(matches))
+	for i, tv := range matches {
+		names[i] = fmt.Sprintf("%q (%s)", tv.Name, tv.IP)
+	}
+	return tvInfo{}, fmt.Errorf("%q matches several TVs: %s; give more of the name", name, strings.Join(names, ", "))
 }
 
 // ssdpHeader returns one header value from an SSDP (HTTP-shaped) reply.
@@ -204,8 +247,12 @@ func ssdpHeader(resp []byte, key string) string {
 }
 
 // describe returns friendly name and manufacturer, or empty strings on failure.
-func describe(hc *http.Client, location string) (name, manufacturer string) {
-	resp, err := hc.Get(location)
+func describe(ctx context.Context, hc *http.Client, location string) (name, manufacturer string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, location, nil)
+	if err != nil {
+		return "", ""
+	}
+	resp, err := hc.Do(req)
 	if err != nil {
 		return "", ""
 	}

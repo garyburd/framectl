@@ -5,13 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/garyburd/websocket"
 )
 
 // artClient serializes art-app operations over the wire client. Responses and
@@ -23,7 +20,8 @@ type artClient struct {
 	stop func() bool     // tears down the ctx-cancellation binding (see openArt)
 }
 
-// send wraps inner as a JSON string in an ms.channel.emit envelope.
+// send wraps inner as a JSON string in an ms.channel.emit envelope. A write
+// wedged longer than replyTimeout closes the connection.
 func (c *artClient) send(inner any) error {
 	body, err := json.Marshal(inner)
 	if err != nil {
@@ -37,7 +35,14 @@ func (c *artClient) send(inner any) error {
 			"data":  string(body),
 		},
 	})
-	return c.cl.write(c.ctx, msg)
+	wctx, cancel := context.WithTimeout(c.ctx, replyTimeout)
+	defer cancel()
+	defer c.cl.bind(wctx)()
+	err = c.cl.write(wctx, msg)
+	if err != nil && wctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("could not send the request to the TV within %v", replyTimeout)
+	}
+	return err
 }
 
 // replyTimeout catches dropped requests and incompatible firmware responses.
@@ -70,7 +75,7 @@ func (c *artClient) waitForResponse(id string) (json.RawMessage, error) {
 			if eid, _ := errorRequest(inner); eid == "" || eid == id {
 				return nil, tvError(inner)
 			}
-			continue // stale error for an earlier, timed-out request
+			continue // names another request id; not this request's failure
 		}
 		if echoedRequestID(inner) == id {
 			return raw, nil
@@ -168,7 +173,9 @@ func tvError(inner map[string]json.RawMessage) error {
 	return fmt.Errorf("TV returned error (code %s)", rawString(inner["error_code"]))
 }
 
-// shutdown closes gracefully and drains straggling errors.
+// shutdown closes gracefully and drains straggling errors. The work already
+// succeeded, so only a TV error event or Ctrl-C fails the drain; a missing
+// close echo or a dropped transport just ends it.
 func (c *artClient) shutdown() error {
 	defer c.stop()
 	defer c.cl.close() // shutdown doesn't release the transport; the drain's caller must
@@ -176,12 +183,7 @@ func (c *artClient) shutdown() error {
 	for {
 		raw, err := c.readEvent()
 		if err != nil {
-			// Expected close paths end the drain; transport failures do not.
-			var ce *websocket.CloseError
-			if errors.As(err, &ce) || errors.Is(err, websocket.ErrClosed) || errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
+			return c.ctx.Err() // nil unless interrupted
 		}
 		var inner map[string]json.RawMessage
 		if raw == nil || json.Unmarshal(raw, &inner) != nil {
@@ -453,8 +455,9 @@ func openArt(ctx context.Context, conn connection, connectTimeout time.Duration,
 		return nil, err
 	}
 
-	// A resolved name already answered; only waking a literal host needs retries.
-	retry := conn.Host != "" && wake && conn.MAC != ""
+	// A waking TV may answer SSDP or accept TCP before the art app is up, so
+	// retry for names and hosts alike. A channel-level rejection is final.
+	retry := wake && conn.MAC != ""
 	for waited := false; ; waited = true {
 		cl, err := connectArt(cctx, addr, conn.Token, debug)
 		if err == nil {
@@ -463,7 +466,7 @@ func openArt(ctx context.Context, conn connection, connectTimeout time.Duration,
 			}
 			return newArtClient(ctx, cl), nil
 		}
-		if !retry {
+		if !retry || errors.Is(err, errUnauthorized) || errors.Is(err, errApprovalTimeout) {
 			return nil, err
 		}
 		if !waited {
@@ -471,6 +474,11 @@ func openArt(ctx context.Context, conn connection, connectTimeout time.Duration,
 		}
 		select {
 		case <-cctx.Done():
+			// Keep the last attempt's own failure; it may not be a timeout.
+			var te *connectTimeoutError
+			if cctx.Err() == context.DeadlineExceeded && !errors.As(err, &te) {
+				return nil, fmt.Errorf("%w; the last attempt failed: %v", &connectTimeoutError{addr}, err)
+			}
 			return nil, connectErr(cctx, addr, err)
 		case <-time.After(connectRetryInterval):
 		}
@@ -505,7 +513,14 @@ func connectArt(ctx context.Context, addr, token string, debug bool) (*client, e
 // connectErr translates deadline-triggered socket failures into a clear timeout.
 func connectErr(ctx context.Context, addr string, err error) error {
 	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("timed out connecting to %s (is the TV awake and reachable? ensure Wake-on-LAN / 'Power On with Mobile' is enabled on it)", addr)
+		return &connectTimeoutError{addr}
 	}
 	return err
+}
+
+// connectTimeoutError reports that the TV did not answer in time.
+type connectTimeoutError struct{ addr string }
+
+func (e *connectTimeoutError) Error() string {
+	return fmt.Sprintf("timed out connecting to %s (is the TV awake and reachable? ensure Wake-on-LAN / 'Power On with Mobile' is enabled on it)", e.addr)
 }

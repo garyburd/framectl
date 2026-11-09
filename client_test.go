@@ -73,8 +73,8 @@ func TestContentItemUnmarshal(t *testing.T) {
 	}
 }
 
-// waitForResponse uses errorRequest's id to skip errors echoed for an earlier,
-// timed-out request instead of misattributing them to the in-flight one.
+// waitForResponse uses errorRequest's id to skip errors that name another
+// request instead of misattributing them to the in-flight one.
 func TestErrorRequest(t *testing.T) {
 	attributed := rawMap(t, `{"event":"error","error_code":"-10","request_data":"{\"id\":\"x\",\"request\":\"select_image\"}"}`)
 	if id, request := errorRequest(attributed); id != "x" || request != "select_image" {

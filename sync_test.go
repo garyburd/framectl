@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -127,5 +129,51 @@ func TestPlanMirror(t *testing.T) {
 				t.Errorf("deletes = %v, want %v", gotDeletes, tt.wantDeletes)
 			}
 		})
+	}
+}
+
+// A kept current photo whose source is gone must not leave a record behind:
+// sourcesDiffer would then wake the TV on every run.
+func TestForgetKept(t *testing.T) {
+	t0 := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	d := tvData{Managed: []managedPhoto{
+		{Path: "/a.jpg", Size: 1, ModTime: t0, ID: "ca"},
+		{Path: "/gone.jpg", Size: 2, ModTime: t0, ID: "cg"},
+	}}
+	sources := []sourceImage{{path: "/a.jpg", size: 1, modTime: t0}}
+	if !sourcesDiffer(d, sources) {
+		t.Fatal("sourcesDiffer = false before forgetKept, want true")
+	}
+	if !forgetKept(&d, "cg") {
+		t.Error("forgetKept = false, want true for a recorded id")
+	}
+	if sourcesDiffer(d, sources) {
+		t.Error("sourcesDiffer = true after forgetKept, want false")
+	}
+	if forgetKept(&d, "unmanaged") {
+		t.Error("forgetKept = true for an id with no record")
+	}
+}
+
+// Directory scans must report a symlink target's size and mtime, as explicit
+// paths do, so changes to the target are detected.
+func TestScanDirFollowsSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "target.jpg")
+	if err := os.WriteFile(target, make([]byte, 1234), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "link.jpg")); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(dir, "dir.jpg")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := scanDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || filepath.Base(got[0].path) != "link.jpg" || got[0].size != 1234 {
+		t.Errorf("scanDir = %+v, want only link.jpg with the target's size 1234", got)
 	}
 }

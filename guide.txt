@@ -39,11 +39,12 @@ DISCOVERY AND PAIRING
 
 discover prints `ip<TAB>name<TAB>mac` for each device. pair requires either
 -host or -name; names are discovered with SSDP and matched case-insensitively.
+-name may be part of a name, but fails if it matches more than one TV.
 
 On first use, accept the TV's pairing prompt. <tv.json> stores the token,
-target, and MAC. Stored names are resolved on each connection, so address
-changes are safe; stored hosts are used verbatim. Later commands reuse the
-token without another prompt.
+target, and MAC. A name is stored in full and resolved on each connection,
+so address changes are safe; stored hosts are used verbatim. Later commands
+reuse the token without another prompt.
 
 	framectl ~/tv.json pair -name "The Frame 50"
 

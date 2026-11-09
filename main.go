@@ -71,7 +71,7 @@ func main() {
 	fs.Usage = func() { fmt.Fprintf(os.Stderr, "usage: framectl %s\n", c.synopsis()) }
 	registerFlags(fs, c.cmd)
 	fs.Parse(rest)
-	if len(fs.Args()) < c.minArgs {
+	if n := len(fs.Args()); n < c.minArgs || (n > c.minArgs && !strings.HasSuffix(c.args, "...")) {
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -143,7 +143,7 @@ type command struct {
 	needTVFile bool
 	hidden     bool
 	minArgs    int    // fewest positional args; main enforces it before running
-	args       string // positional-arg synopsis shown after the flags
+	args       string // positional-arg synopsis; extra args need a trailing "..."
 	summary    string // one-line description for the listings
 	cmd        runner
 }
@@ -363,17 +363,19 @@ func expandStdin(args []string) ([]string, error) {
 	return out, nil
 }
 
-// targetHost validates -host/-name and resolves names through SSDP.
-func targetHost(ctx context.Context, host, name string) (string, error) {
+// targetHost validates -host/-name and resolves names through SSDP. For a
+// name it also returns the TV's full friendly name.
+func targetHost(ctx context.Context, host, name string) (addr, fullName string, err error) {
 	switch {
 	case host != "" && name != "":
-		return "", errors.New("specify only one of -host or -name")
+		return "", "", errors.New("specify only one of -host or -name")
 	case host != "":
-		return host, nil
+		return host, "", nil
 	case name != "":
-		return resolveName(ctx, name)
+		tv, err := resolveName(ctx, name)
+		return tv.IP, tv.Name, err
 	default:
-		return "", errors.New("specify -host <ip> or -name <ssdp-name>")
+		return "", "", errors.New("specify -host <ip> or -name <ssdp-name>")
 	}
 }
 

@@ -53,11 +53,16 @@ func prepareImageReader(r io.Reader) ([]byte, error) {
 	ox, oy := (maxWidth-fw)/2, (maxHeight-fh)/2
 	photo := image.Rect(ox, oy, ox+fw, oy+fh)
 
-	// A 16:9 photo covers the canvas and needs no background.
-	if photo != canvas.Bounds() {
+	// An opaque 16:9 photo covers the canvas and needs no background.
+	// Transparent pixels composite over the background instead of going black.
+	op := draw.Src
+	if o, ok := src.(interface{ Opaque() bool }); !ok || !o.Opaque() {
+		op = draw.Over
+	}
+	if photo != canvas.Bounds() || op == draw.Over {
 		fillBackground(canvas, src)
 	}
-	draw.CatmullRom.Scale(canvas, photo, src, b, draw.Src, nil)
+	draw.CatmullRom.Scale(canvas, photo, src, b, op, nil)
 
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, canvas, &jpeg.Options{Quality: jpegQuality}); err != nil {

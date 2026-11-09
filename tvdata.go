@@ -85,7 +85,8 @@ func (c connection) address(ctx context.Context) (string, error) {
 	case c.Host != "":
 		return c.Host, nil
 	case c.Name != "":
-		return resolveName(ctx, c.Name)
+		tv, err := resolveName(ctx, c.Name)
+		return tv.IP, err
 	default:
 		return "", errors.New("no host or name recorded")
 	}

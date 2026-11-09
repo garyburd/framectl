@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -136,6 +137,12 @@ func doubleEncodedData(msg []byte) []byte {
 	return []byte(s)
 }
 
+// The TV's channel-level rejections. Retrying a connection cannot fix them.
+var (
+	errUnauthorized    = errors.New("unauthorized — accept the pairing prompt on the TV and retry")
+	errApprovalTimeout = errors.New("timed out waiting for TV-side approval")
+)
+
 // waitConnect waits for the remote channel's connect event and returns its token.
 func (c *client) waitConnect() (string, error) {
 	for {
@@ -155,9 +162,9 @@ func (c *client) waitConnect() (string, error) {
 			_ = json.Unmarshal(e.Data, &d)
 			return d.Token, nil
 		case "ms.channel.unauthorized":
-			return "", fmt.Errorf("unauthorized — accept the pairing prompt on the TV and retry")
+			return "", errUnauthorized
 		case "ms.channel.timeOut":
-			return "", fmt.Errorf("timed out waiting for TV-side approval")
+			return "", errApprovalTimeout
 		}
 	}
 }
@@ -178,9 +185,9 @@ func (c *client) waitReady() error {
 		case "ms.channel.ready":
 			return nil
 		case "ms.channel.unauthorized":
-			return fmt.Errorf("unauthorized — accept the pairing prompt on the TV and retry")
+			return errUnauthorized
 		case "ms.channel.timeOut":
-			return fmt.Errorf("timed out waiting for TV-side approval")
+			return errApprovalTimeout
 		}
 	}
 }

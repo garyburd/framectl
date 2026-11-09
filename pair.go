@@ -21,15 +21,26 @@ var pairCommand = &command{
 }
 
 func (c *pairCmd) run(ctx context.Context, g *globals, _ []string) error {
-	// Preserve a name for later rediscovery; preserve a host verbatim. One
-	// -timeout budget covers both resolution and the dial.
+	// Re-pairing preserves managed photos. Load before the TV-side approval so
+	// an unreadable file doesn't discard a granted token.
+	d, err := loadTVData(g.tvFile)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		d = tvData{} // no file yet: start fresh
+	}
+
+	// Preserve a host verbatim. Record a name in full, so later rediscovery
+	// matches it exactly and stays unambiguous. One -timeout budget covers
+	// both resolution and the dial.
 	cctx, cancel := context.WithTimeout(ctx, g.timeout)
 	defer cancel()
-	addr, err := targetHost(cctx, c.Host, c.Name)
+	addr, fullName, err := targetHost(cctx, c.Host, c.Name)
 	if err != nil {
 		return err
 	}
-	return pair(ctx, cctx, addr, connection{Host: c.Host, Name: c.Name}, g)
+	return pair(ctx, cctx, addr, d, connection{Host: c.Host, Name: fullName}, g)
 }
 
 // fetchToken uses the remote channel because the art channel issues no token.
@@ -54,8 +65,8 @@ func fetchToken(ctx, connectCtx context.Context, addr string, debug bool) (strin
 	return token, nil
 }
 
-// pair saves the token and original host or name in g.tvFile.
-func pair(ctx, connectCtx context.Context, addr string, conn connection, g *globals) error {
+// pair saves d with the token and host or name in g.tvFile.
+func pair(ctx, connectCtx context.Context, addr string, d tvData, conn connection, g *globals) error {
 	token, err := fetchToken(ctx, connectCtx, addr, g.debug)
 	if err != nil {
 		return err
@@ -69,18 +80,10 @@ func pair(ctx, connectCtx context.Context, addr string, conn connection, g *glob
 			ip = r.String()
 		}
 	}
-	if conn.MAC = macForIP(ip); conn.MAC == "" {
+	if conn.MAC = macForIP(ctx, ip); conn.MAC == "" {
 		log.Printf("pair: could not determine MAC for %s; commands won't be able to wake the TV with Wake-on-LAN", addr)
 	}
 
-	// Re-pairing preserves managed photos.
-	d, err := loadTVData(g.tvFile)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-		d = tvData{} // no file yet: start fresh
-	}
 	d.Connect = conn
 	if err := saveTVData(g.tvFile, d); err != nil {
 		return err
